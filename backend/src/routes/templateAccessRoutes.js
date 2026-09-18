@@ -5,36 +5,54 @@ const {
   getMyTemplateAccess,
   getAllTemplateAccess,
   getUserTemplateAccess,
+  getTemplateAccessById,
   attachCard,
+  detachCard,
   updateTemplateAccess,
   revokeTemplateAccess,
   restoreTemplateAccess,
   deleteTemplateAccess
 } = require("../controllers/templateAccessController");
 
-const { protect } = require("../middleware/authMiddleware");
-const { allowRoles } = require("../middleware/roleMiddleware");
+const {
+  protect
+} = require("../middleware/authMiddleware");
+
+const {
+  allowRoles
+} = require("../middleware/roleMiddleware");
 
 const router = express.Router();
 
+/*
+|--------------------------------------------------------------------------
+| Customer Routes
+|--------------------------------------------------------------------------
+|
+| Customer can see all active template/design access granted to them.
+|
+*/
 
-// ======================================================
-// CUSTOMER ROUTES
-// ======================================================
-
-// Logged-in user gets all designs/cards assigned to them
 router.get(
   "/my",
   protect,
   getMyTemplateAccess
 );
 
+/*
+|--------------------------------------------------------------------------
+| Admin - Get All Template Access
+|--------------------------------------------------------------------------
+|
+| Optional filters:
+|
+| /api/template-access?status=active
+| /api/template-access?status=disabled
+| /api/template-access?userId=...
+| /api/template-access?templateId=...
+|
+*/
 
-// ======================================================
-// ADMIN ROUTES
-// ======================================================
-
-// Get every template access record
 router.get(
   "/",
   protect,
@@ -42,7 +60,12 @@ router.get(
   getAllTemplateAccess
 );
 
-// Get all template accesses for one specific user
+/*
+|--------------------------------------------------------------------------
+| Admin - Access For Specific User
+|--------------------------------------------------------------------------
+*/
+
 router.get(
   "/user/:userId",
   protect,
@@ -50,7 +73,30 @@ router.get(
   getUserTemplateAccess
 );
 
-// Grant a template/design to a user
+/*
+|--------------------------------------------------------------------------
+| Admin - Get Access By ID
+|--------------------------------------------------------------------------
+*/
+
+router.get(
+  "/:id",
+  protect,
+  allowRoles("admin"),
+  getTemplateAccessById
+);
+
+/*
+|--------------------------------------------------------------------------
+| Admin - Grant Template Access
+|--------------------------------------------------------------------------
+|
+| Each request represents one design/event grant.
+|
+| The same customer may receive the same template multiple times.
+|
+*/
+
 router.post(
   "/",
   protect,
@@ -58,7 +104,12 @@ router.post(
   grantTemplateAccess
 );
 
-// Attach a created card to an access record
+/*
+|--------------------------------------------------------------------------
+| Admin - Attach Card
+|--------------------------------------------------------------------------
+*/
+
 router.put(
   "/:id/card",
   protect,
@@ -66,7 +117,33 @@ router.put(
   attachCard
 );
 
-// Update access details
+/*
+|--------------------------------------------------------------------------
+| Admin - Detach Card
+|--------------------------------------------------------------------------
+*/
+
+router.delete(
+  "/:id/card",
+  protect,
+  allowRoles("admin"),
+  detachCard
+);
+
+/*
+|--------------------------------------------------------------------------
+| Admin - Update Access
+|--------------------------------------------------------------------------
+|
+| Editable information includes:
+|
+| - pricePaid
+| - currency
+| - notes
+| - eventLabel
+|
+*/
+
 router.put(
   "/:id",
   protect,
@@ -74,7 +151,16 @@ router.put(
   updateTemplateAccess
 );
 
-// Disable access
+/*
+|--------------------------------------------------------------------------
+| Admin - Revoke Access
+|--------------------------------------------------------------------------
+|
+| Soft disable.
+| Card and RSVP data remain intact.
+|
+*/
+
 router.put(
   "/:id/revoke",
   protect,
@@ -82,7 +168,12 @@ router.put(
   revokeTemplateAccess
 );
 
-// Restore access
+/*
+|--------------------------------------------------------------------------
+| Admin - Restore Access
+|--------------------------------------------------------------------------
+*/
+
 router.put(
   "/:id/restore",
   protect,
@@ -90,13 +181,20 @@ router.put(
   restoreTemplateAccess
 );
 
-// Permanently delete access record
+/*
+|--------------------------------------------------------------------------
+| Admin - Permanently Delete Access Record
+|--------------------------------------------------------------------------
+|
+| Does NOT delete the associated Card.
+|
+*/
+
 router.delete(
   "/:id",
   protect,
   allowRoles("admin"),
   deleteTemplateAccess
 );
-
 
 module.exports = router;

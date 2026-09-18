@@ -3,10 +3,14 @@ const Template = require("../models/Template");
 const User = require("../models/User");
 const Card = require("../models/Card");
 
-
-// ======================================================
-// GRANT TEMPLATE ACCESS TO USER
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Grant Template Access
+|--------------------------------------------------------------------------
+|
+| Admin grants a design/template to a customer.
+|
+*/
 
 const grantTemplateAccess = async (req, res) => {
   try {
@@ -17,6 +21,13 @@ const grantTemplateAccess = async (req, res) => {
       notes
     } = req.body;
 
+    if (!userId || !templateId) {
+      return res.status(400).json({
+        success: false,
+        message: "User and template are required"
+      });
+    }
+
     const user = await User.findById(userId);
 
     if (!user) {
@@ -26,7 +37,16 @@ const grantTemplateAccess = async (req, res) => {
       });
     }
 
-    const template = await Template.findById(templateId);
+    if (!user.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot grant access to a disabled user"
+      });
+    }
+
+    const template = await Template.findById(
+      templateId
+    );
 
     if (!template) {
       return res.status(404).json({
@@ -35,121 +55,247 @@ const grantTemplateAccess = async (req, res) => {
       });
     }
 
-    const existingAccess = await TemplateAccess.findOne({
-      user: userId,
-      template: templateId
-    });
+    /*
+    |--------------------------------------------------------------------------
+    | Check Existing Access
+    |--------------------------------------------------------------------------
+    */
+
+    const existingAccess =
+      await TemplateAccess.findOne({
+        user: userId,
+        template: templateId
+      });
 
     if (existingAccess) {
-      return res.status(400).json({
-        success: false,
-        message: "User already has access to this template"
+      if (existingAccess.status === "active") {
+        return res.status(400).json({
+          success: false,
+          message:
+            "This user already has access to this template"
+        });
+      }
+
+      /*
+      | If access existed but was disabled,
+      | restore it instead of creating a duplicate.
+      */
+
+      existingAccess.status = "active";
+      existingAccess.grantedBy =
+        req.user._id;
+      existingAccess.grantedAt =
+        new Date();
+
+      if (pricePaid !== undefined) {
+        existingAccess.pricePaid =
+          pricePaid;
+      }
+
+      if (notes !== undefined) {
+        existingAccess.notes = notes;
+      }
+
+      await existingAccess.save();
+
+      const restoredAccess =
+        await TemplateAccess.findById(
+          existingAccess._id
+        )
+          .populate(
+            "user",
+            "firstName lastName email role isActive"
+          )
+          .populate("template")
+          .populate("card")
+          .populate(
+            "grantedBy",
+            "firstName lastName email"
+          );
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "Template access restored successfully",
+        access: restoredAccess
       });
     }
 
-    const access = await TemplateAccess.create({
-      user: userId,
-      template: templateId,
-      grantedBy: req.user._id,
-      pricePaid,
-      notes
-    });
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Price
+    |--------------------------------------------------------------------------
+    */
 
-    const populatedAccess = await access.populate([
-      {
-        path: "user",
-        select: "firstName lastName email"
-      },
-      {
-        path: "template"
-      },
-      {
-        path: "grantedBy",
-        select: "firstName lastName email"
+    let finalPricePaid = 0;
+
+    if (pricePaid !== undefined) {
+      const parsedPrice =
+        Number(pricePaid);
+
+      if (
+        Number.isNaN(parsedPrice) ||
+        parsedPrice < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Price paid must be a valid non-negative number"
+        });
       }
-    ]);
+
+      finalPricePaid = parsedPrice;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Create Access
+    |--------------------------------------------------------------------------
+    */
+
+    const access =
+      await TemplateAccess.create({
+        user: userId,
+        template: templateId,
+        grantedBy: req.user._id,
+        pricePaid: finalPricePaid,
+        notes: notes || ""
+      });
+
+    const populatedAccess =
+      await TemplateAccess.findById(
+        access._id
+      )
+        .populate(
+          "user",
+          "firstName lastName email role isActive"
+        )
+        .populate("template")
+        .populate("card")
+        .populate(
+          "grantedBy",
+          "firstName lastName email"
+        );
 
     res.status(201).json({
       success: true,
-      message: "Template access granted successfully",
+      message:
+        "Template access granted successfully",
       access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to grant template access",
+      message:
+        "Failed to grant template access",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Customer - Get My Template Access
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// GET LOGGED-IN USER'S DESIGNS
-// ======================================================
-
-const getMyTemplateAccess = async (req, res) => {
+const getMyTemplateAccess = async (
+  req,
+  res
+) => {
   try {
-    const accesses = await TemplateAccess.find({
-      user: req.user._id,
-      status: "active"
-    })
-      .populate("template")
-      .populate("card")
-      .sort({ grantedAt: -1 });
+    const access =
+      await TemplateAccess.find({
+        user: req.user._id,
+        status: "active"
+      })
+        .populate("template")
+        .populate("card")
+        .sort({
+          grantedAt: -1
+        });
 
     res.status(200).json({
       success: true,
-      count: accesses.length,
-      designs: accesses
+      count: access.length,
+      access
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to fetch your designs",
+      message:
+        "Failed to fetch template access",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Admin - Get All Template Access
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// GET ALL TEMPLATE ACCESS RECORDS
-// ADMIN DASHBOARD
-// ======================================================
-
-const getAllTemplateAccess = async (req, res) => {
+const getAllTemplateAccess = async (
+  req,
+  res
+) => {
   try {
-    const accesses = await TemplateAccess.find()
-      .populate("user", "firstName lastName email")
-      .populate("template")
-      .populate("card")
-      .populate("grantedBy", "firstName lastName email")
-      .sort({ createdAt: -1 });
+    const {
+      status
+    } = req.query;
+
+    const filter = {};
+
+    if (status) {
+      filter.status = status;
+    }
+
+    const access =
+      await TemplateAccess.find(filter)
+        .populate(
+          "user",
+          "firstName lastName email role isActive"
+        )
+        .populate("template")
+        .populate("card")
+        .populate(
+          "grantedBy",
+          "firstName lastName email"
+        )
+        .sort({
+          createdAt: -1
+        });
 
     res.status(200).json({
       success: true,
-      count: accesses.length,
-      accesses
+      count: access.length,
+      access
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to fetch template access records",
+      message:
+        "Failed to fetch template access",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Admin - Get Template Access For Specific User
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// GET TEMPLATE ACCESS FOR ONE USER
-// ADMIN DASHBOARD
-// ======================================================
-
-const getUserTemplateAccess = async (req, res) => {
+const getUserTemplateAccess = async (
+  req,
+  res
+) => {
   try {
-    const user = await User.findById(req.params.userId);
+    const user = await User.findById(
+      req.params.userId
+    ).select("-password");
 
     if (!user) {
       return res.status(404).json({
@@ -158,52 +304,85 @@ const getUserTemplateAccess = async (req, res) => {
       });
     }
 
-    const accesses = await TemplateAccess.find({
-      user: req.params.userId
-    })
-      .populate("template")
-      .populate("card")
-      .sort({ grantedAt: -1 });
+    const access =
+      await TemplateAccess.find({
+        user: user._id
+      })
+        .populate("template")
+        .populate("card")
+        .populate(
+          "grantedBy",
+          "firstName lastName email"
+        )
+        .sort({
+          createdAt: -1
+        });
 
     res.status(200).json({
       success: true,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email
-      },
-      count: accesses.length,
-      designs: accesses
+      user,
+      count: access.length,
+      access
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to fetch user's designs",
+      message:
+        "Failed to fetch user template access",
       error: error.message
     });
   }
 };
 
-
-// ======================================================
-// ATTACH CARD TO TEMPLATE ACCESS
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Admin - Attach Card To Template Access
+|--------------------------------------------------------------------------
+|
+| Card must:
+| - exist
+| - belong to the same user
+| - use the same template
+|
+*/
 
 const attachCard = async (req, res) => {
   try {
-    const { cardId } = req.body;
+    const {
+      cardId
+    } = req.body;
 
-    const access = await TemplateAccess.findById(req.params.id);
+    if (!cardId) {
+      return res.status(400).json({
+        success: false,
+        message: "Card is required"
+      });
+    }
+
+    const access =
+      await TemplateAccess.findById(
+        req.params.id
+      );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message: "Template access not found"
+        message:
+          "Template access not found"
       });
     }
 
-    const card = await Card.findById(cardId);
+    if (access.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Cannot attach a card to disabled template access"
+      });
+    }
+
+    const card = await Card.findById(
+      cardId
+    );
 
     if (!card) {
       return res.status(404).json({
@@ -212,19 +391,59 @@ const attachCard = async (req, res) => {
       });
     }
 
-    // Make sure the card belongs to the same user
-    if (card.owner.toString() !== access.user.toString()) {
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Card Owner
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      card.owner.toString() !==
+      access.user.toString()
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Card does not belong to this user"
+        message:
+          "Card does not belong to the user who owns this template access"
       });
     }
 
-    // Make sure the card uses the purchased/granted template
-    if (card.template.toString() !== access.template.toString()) {
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Template
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      card.template.toString() !==
+      access.template.toString()
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Card does not use this template"
+        message:
+          "Card does not use the template associated with this access"
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Prevent Card Being Attached Elsewhere
+    |--------------------------------------------------------------------------
+    */
+
+    const existingCardAccess =
+      await TemplateAccess.findOne({
+        card: card._id,
+        _id: {
+          $ne: access._id
+        }
+      });
+
+    if (existingCardAccess) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "This card is already attached to another template access record"
       });
     }
 
@@ -232,61 +451,83 @@ const attachCard = async (req, res) => {
 
     await access.save();
 
-    const populatedAccess = await access.populate([
-      {
-        path: "user",
-        select: "firstName lastName email"
-      },
-      {
-        path: "template"
-      },
-      {
-        path: "card"
-      }
-    ]);
+    const populatedAccess =
+      await TemplateAccess.findById(
+        access._id
+      )
+        .populate(
+          "user",
+          "firstName lastName email role isActive"
+        )
+        .populate("template")
+        .populate("card");
 
     res.status(200).json({
       success: true,
-      message: "Card attached successfully",
+      message:
+        "Card attached successfully",
       access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to attach card",
+      message:
+        "Failed to attach card",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Admin - Update Template Access
+|--------------------------------------------------------------------------
+|
+| Editable:
+| - pricePaid
+| - notes
+|
+*/
 
-// ======================================================
-// UPDATE TEMPLATE ACCESS
-// ======================================================
-
-const updateTemplateAccess = async (req, res) => {
+const updateTemplateAccess = async (
+  req,
+  res
+) => {
   try {
     const {
-      status,
       pricePaid,
       notes
     } = req.body;
 
-    const access = await TemplateAccess.findById(req.params.id);
+    const access =
+      await TemplateAccess.findById(
+        req.params.id
+      );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message: "Template access not found"
+        message:
+          "Template access not found"
       });
     }
 
-    if (status !== undefined) {
-      access.status = status;
-    }
-
     if (pricePaid !== undefined) {
-      access.pricePaid = pricePaid;
+      const parsedPrice =
+        Number(pricePaid);
+
+      if (
+        Number.isNaN(parsedPrice) ||
+        parsedPrice < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Price paid must be a valid non-negative number"
+        });
+      }
+
+      access.pricePaid = parsedPrice;
     }
 
     if (notes !== undefined) {
@@ -295,46 +536,70 @@ const updateTemplateAccess = async (req, res) => {
 
     await access.save();
 
-    const populatedAccess = await access.populate([
-      {
-        path: "user",
-        select: "firstName lastName email"
-      },
-      {
-        path: "template"
-      },
-      {
-        path: "card"
-      }
-    ]);
+    const populatedAccess =
+      await TemplateAccess.findById(
+        access._id
+      )
+        .populate(
+          "user",
+          "firstName lastName email role isActive"
+        )
+        .populate("template")
+        .populate("card")
+        .populate(
+          "grantedBy",
+          "firstName lastName email"
+        );
 
     res.status(200).json({
       success: true,
-      message: "Template access updated successfully",
+      message:
+        "Template access updated successfully",
       access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to update template access",
+      message:
+        "Failed to update template access",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Admin - Revoke Template Access
+|--------------------------------------------------------------------------
+|
+| Soft revoke.
+| Existing Card is NOT deleted.
+|
+*/
 
-// ======================================================
-// REVOKE / DISABLE TEMPLATE ACCESS
-// ======================================================
-
-const revokeTemplateAccess = async (req, res) => {
+const revokeTemplateAccess = async (
+  req,
+  res
+) => {
   try {
-    const access = await TemplateAccess.findById(req.params.id);
+    const access =
+      await TemplateAccess.findById(
+        req.params.id
+      );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message: "Template access not found"
+        message:
+          "Template access not found"
+      });
+    }
+
+    if (access.status === "disabled") {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Template access is already disabled"
       });
     }
 
@@ -344,87 +609,169 @@ const revokeTemplateAccess = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Template access disabled successfully",
+      message:
+        "Template access revoked successfully",
       access
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to disable template access",
+      message:
+        "Failed to revoke template access",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Admin - Restore Template Access
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// RESTORE TEMPLATE ACCESS
-// ======================================================
-
-const restoreTemplateAccess = async (req, res) => {
+const restoreTemplateAccess = async (
+  req,
+  res
+) => {
   try {
-    const access = await TemplateAccess.findById(req.params.id);
+    const access =
+      await TemplateAccess.findById(
+        req.params.id
+      );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message: "Template access not found"
+        message:
+          "Template access not found"
+      });
+    }
+
+    if (access.status === "active") {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Template access is already active"
+      });
+    }
+
+    const user = await User.findById(
+      access.user
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Associated user no longer exists"
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Cannot restore access for a disabled user"
+      });
+    }
+
+    const template =
+      await Template.findById(
+        access.template
+      );
+
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Associated template no longer exists"
       });
     }
 
     access.status = "active";
+    access.grantedBy =
+      req.user._id;
+    access.grantedAt =
+      new Date();
 
     await access.save();
 
+    const populatedAccess =
+      await TemplateAccess.findById(
+        access._id
+      )
+        .populate(
+          "user",
+          "firstName lastName email role isActive"
+        )
+        .populate("template")
+        .populate("card")
+        .populate(
+          "grantedBy",
+          "firstName lastName email"
+        );
+
     res.status(200).json({
       success: true,
-      message: "Template access restored successfully",
-      access
+      message:
+        "Template access restored successfully",
+      access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to restore template access",
+      message:
+        "Failed to restore template access",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Admin - Delete Template Access
+|--------------------------------------------------------------------------
+|
+| Hard deletion.
+|
+| Card itself is NOT deleted.
+|
+*/
 
-// ======================================================
-// DELETE TEMPLATE ACCESS
-// ======================================================
-
-const deleteTemplateAccess = async (req, res) => {
+const deleteTemplateAccess = async (
+  req,
+  res
+) => {
   try {
-    const access = await TemplateAccess.findByIdAndDelete(
-      req.params.id
-    );
+    const access =
+      await TemplateAccess.findById(
+        req.params.id
+      );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message: "Template access not found"
+        message:
+          "Template access not found"
       });
     }
 
+    await access.deleteOne();
+
     res.status(200).json({
       success: true,
-      message: "Template access deleted successfully"
+      message:
+        "Template access deleted successfully"
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to delete template access",
+      message:
+        "Failed to delete template access",
       error: error.message
     });
   }
 };
-
-
-// ======================================================
-// EXPORTS
-// ======================================================
 
 module.exports = {
   grantTemplateAccess,

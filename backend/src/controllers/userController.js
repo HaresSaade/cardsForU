@@ -1,16 +1,92 @@
 const User = require("../models/User");
 
-
-// ======================================================
-// GET ALL USERS
-// ADMIN ONLY
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Get All Users
+|--------------------------------------------------------------------------
+| Admin only.
+|
+| Optional filters:
+| ?role=customer
+| ?role=admin
+| ?role=designer
+| ?isActive=true
+| ?search=hares
+|--------------------------------------------------------------------------
+*/
 
 const getUsers = async (req, res) => {
   try {
-    const users = await User.find()
+    const {
+      role,
+      isActive,
+      search
+    } = req.query;
+
+    const filter = {};
+
+    if (role) {
+      filter.role = role;
+    }
+
+    if (isActive !== undefined) {
+      if (
+        isActive !== "true" &&
+        isActive !== "false"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "isActive must be true or false"
+        });
+      }
+
+      filter.isActive =
+        isActive === "true";
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Search
+    |--------------------------------------------------------------------------
+    */
+
+    if (search) {
+      const safeSearch = search
+        .toString()
+        .trim()
+        .replace(
+          /[.*+?^${}()|[\]\\]/g,
+          "\\$&"
+        );
+
+      filter.$or = [
+        {
+          firstName: {
+            $regex: safeSearch,
+            $options: "i"
+          }
+        },
+        {
+          lastName: {
+            $regex: safeSearch,
+            $options: "i"
+          }
+        },
+        {
+          email: {
+            $regex: safeSearch,
+            $options: "i"
+          }
+        }
+      ];
+    }
+
+    const users = await User.find(filter)
       .select("-password")
-      .sort({ createdAt: -1 });
+      .sort({
+        createdAt: -1
+      });
 
     res.status(200).json({
       success: true,
@@ -20,22 +96,24 @@ const getUsers = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to fetch users",
+      message:
+        "Failed to fetch users",
       error: error.message
     });
   }
 };
 
-
-// ======================================================
-// GET ONE USER BY ID
-// ADMIN ONLY
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Get User By ID
+|--------------------------------------------------------------------------
+*/
 
 const getUserById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id)
-      .select("-password");
+    const user = await User.findById(
+      req.params.id
+    ).select("-password");
 
     if (!user) {
       return res.status(404).json({
@@ -51,17 +129,29 @@ const getUserById = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to fetch user",
+      message:
+        "Failed to fetch user",
       error: error.message
     });
   }
 };
 
-
-// ======================================================
-// UPDATE USER
-// ADMIN ONLY
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Update User
+|--------------------------------------------------------------------------
+|
+| Admin can update:
+|
+| - firstName
+| - lastName
+| - email
+| - role
+|
+| isActive is intentionally NOT handled here.
+| Dedicated enable/disable endpoints handle that.
+|--------------------------------------------------------------------------
+*/
 
 const updateUser = async (req, res) => {
   try {
@@ -69,11 +159,12 @@ const updateUser = async (req, res) => {
       firstName,
       lastName,
       email,
-      role,
-      isActive
+      role
     } = req.body;
 
-    const user = await User.findById(req.params.id);
+    const user = await User.findById(
+      req.params.id
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -82,70 +173,225 @@ const updateUser = async (req, res) => {
       });
     }
 
-    if (email && email !== user.email) {
-      const existingUser = await User.findOne({ email });
+    /*
+    |--------------------------------------------------------------------------
+    | First Name
+    |--------------------------------------------------------------------------
+    */
+
+    if (firstName !== undefined) {
+      const normalizedFirstName =
+        firstName
+          .toString()
+          .trim();
+
+      if (!normalizedFirstName) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "First name cannot be empty"
+        });
+      }
+
+      user.firstName =
+        normalizedFirstName;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Last Name
+    |--------------------------------------------------------------------------
+    */
+
+    if (lastName !== undefined) {
+      const normalizedLastName =
+        lastName
+          .toString()
+          .trim();
+
+      if (!normalizedLastName) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Last name cannot be empty"
+        });
+      }
+
+      user.lastName =
+        normalizedLastName;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Email
+    |--------------------------------------------------------------------------
+    */
+
+    if (email !== undefined) {
+      const normalizedEmail =
+        email
+          .toString()
+          .trim()
+          .toLowerCase();
+
+      if (!normalizedEmail) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Email cannot be empty"
+        });
+      }
+
+      const existingUser =
+        await User.findOne({
+          email: normalizedEmail,
+          _id: {
+            $ne: user._id
+          }
+        });
 
       if (existingUser) {
         return res.status(400).json({
           success: false,
-          message: "Email is already in use"
+          message:
+            "Email is already in use"
         });
       }
+
+      user.email =
+        normalizedEmail;
     }
 
-    if (firstName !== undefined) {
-      user.firstName = firstName;
-    }
-
-    if (lastName !== undefined) {
-      user.lastName = lastName;
-    }
-
-    if (email !== undefined) {
-      user.email = email;
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Role
+    |--------------------------------------------------------------------------
+    */
 
     if (role !== undefined) {
-      user.role = role;
-    }
+      const allowedRoles = [
+        "customer",
+        "admin",
+        "designer"
+      ];
 
-    if (isActive !== undefined) {
-      user.isActive = isActive;
+      if (
+        !allowedRoles.includes(role)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid user role"
+        });
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | Prevent Admin From Removing Their Own Admin Role
+      |--------------------------------------------------------------------------
+      */
+
+      if (
+        req.user._id.toString() ===
+          user._id.toString() &&
+        role !== "admin"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "You cannot remove your own admin role"
+        });
+      }
+
+      user.role = role;
     }
 
     await user.save();
 
-    const safeUser = await User.findById(user._id)
-      .select("-password");
+    const updatedUser =
+      await User.findById(
+        user._id
+      ).select("-password");
 
     res.status(200).json({
       success: true,
-      message: "User updated successfully",
-      user: safeUser
+      message:
+        "User updated successfully",
+      user: updatedUser
     });
   } catch (error) {
+    /*
+    |--------------------------------------------------------------------------
+    | Duplicate Email
+    |--------------------------------------------------------------------------
+    */
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Email is already in use"
+      });
+    }
+
     res.status(500).json({
       success: false,
-      message: "Failed to update user",
+      message:
+        "Failed to update user",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Disable User
+|--------------------------------------------------------------------------
+|
+| Soft-disable account.
+|
+| Existing JWTs stop working because authMiddleware checks isActive.
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// DISABLE USER
-// ADMIN ONLY
-// ======================================================
-
-const disableUser = async (req, res) => {
+const disableUser = async (
+  req,
+  res
+) => {
   try {
-    const user = await User.findById(req.params.id);
+    const user = await User.findById(
+      req.params.id
+    );
 
     if (!user) {
       return res.status(404).json({
         success: false,
         message: "User not found"
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Prevent Self Disable
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      req.user._id.toString() ===
+      user._id.toString()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "You cannot disable your own account"
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "User is already disabled"
       });
     }
 
@@ -155,31 +401,59 @@ const disableUser = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "User disabled successfully"
+      message:
+        "User disabled successfully",
+      user: {
+        id: user._id,
+        firstName:
+          user.firstName,
+        lastName:
+          user.lastName,
+        email:
+          user.email,
+        role:
+          user.role,
+        isActive:
+          user.isActive
+      }
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to disable user",
+      message:
+        "Failed to disable user",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Enable User
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// ENABLE USER
-// ADMIN ONLY
-// ======================================================
-
-const enableUser = async (req, res) => {
+const enableUser = async (
+  req,
+  res
+) => {
   try {
-    const user = await User.findById(req.params.id);
+    const user = await User.findById(
+      req.params.id
+    );
 
     if (!user) {
       return res.status(404).json({
         success: false,
         message: "User not found"
+      });
+    }
+
+    if (user.isActive) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "User is already active"
       });
     }
 
@@ -189,26 +463,51 @@ const enableUser = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "User enabled successfully"
+      message:
+        "User enabled successfully",
+      user: {
+        id: user._id,
+        firstName:
+          user.firstName,
+        lastName:
+          user.lastName,
+        email:
+          user.email,
+        role:
+          user.role,
+        isActive:
+          user.isActive
+      }
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to enable user",
+      message:
+        "Failed to enable user",
       error: error.message
     });
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Delete User
+|--------------------------------------------------------------------------
+|
+| Hard deletion should only be used intentionally.
+|
+| Normal account removal should generally use disableUser instead.
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// DELETE USER
-// ADMIN ONLY
-// ======================================================
-
-const deleteUser = async (req, res) => {
+const deleteUser = async (
+  req,
+  res
+) => {
   try {
-    const user = await User.findByIdAndDelete(req.params.id);
+    const user = await User.findById(
+      req.params.id
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -217,23 +516,58 @@ const deleteUser = async (req, res) => {
       });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Prevent Self Deletion
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      req.user._id.toString() ===
+      user._id.toString()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "You cannot delete your own account"
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Prevent Deleting Active Accounts
+    |--------------------------------------------------------------------------
+    |
+    | Admin must disable the account first.
+    |
+    | This reduces accidental destructive actions.
+    |--------------------------------------------------------------------------
+    */
+
+    if (user.isActive) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Disable the user before permanently deleting the account"
+      });
+    }
+
+    await user.deleteOne();
+
     res.status(200).json({
       success: true,
-      message: "User deleted successfully"
+      message:
+        "User deleted successfully"
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Failed to delete user",
+      message:
+        "Failed to delete user",
       error: error.message
     });
   }
 };
-
-
-// ======================================================
-// EXPORTS
-// ======================================================
 
 module.exports = {
   getUsers,

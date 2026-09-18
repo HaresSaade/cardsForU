@@ -3,6 +3,8 @@ const express = require("express");
 const {
   createCard,
   getMyCards,
+  getAllCards,
+  getUserCards,
   getCardById,
   updateCard,
   deleteCard,
@@ -11,26 +13,161 @@ const {
   getPublicCardBySlug
 } = require("../controllers/cardController");
 
-const { protect } = require("../middleware/authMiddleware");
+const {
+  protect
+} = require("../middleware/authMiddleware");
+
+const {
+  allowRoles
+} = require("../middleware/roleMiddleware");
 
 const router = express.Router();
 
-// Public route
-router.get("/public/:slug", getPublicCardBySlug);
+/*
+|--------------------------------------------------------------------------
+| Public Routes
+|--------------------------------------------------------------------------
+|
+| Anyone with the card URL can access a published/shareable card.
+|
+*/
 
-// Authenticated routes
-router.get("/my", protect, getMyCards);
+router.get(
+  "/public/:slug",
+  getPublicCardBySlug
+);
 
-router.get("/:id", protect, getCardById);
+/*
+|--------------------------------------------------------------------------
+| Customer Routes
+|--------------------------------------------------------------------------
+|
+| Returns cards belonging to the currently logged-in user.
+|
+*/
 
-router.post("/", protect, createCard);
+router.get(
+  "/my",
+  protect,
+  getMyCards
+);
 
-router.put("/:id", protect, updateCard);
+/*
+|--------------------------------------------------------------------------
+| Admin Routes
+|--------------------------------------------------------------------------
+|
+| Admin can view every card in the system.
+|
+*/
 
-router.delete("/:id", protect, deleteCard);
+router.get(
+  "/admin",
+  protect,
+  allowRoles("admin"),
+  getAllCards
+);
 
-router.put("/:id/publish", protect, publishCard);
+/*
+|--------------------------------------------------------------------------
+| Admin - Cards For Specific User
+|--------------------------------------------------------------------------
+*/
 
-router.put("/:id/unpublish", protect, unpublishCard);
+router.get(
+  "/user/:userId",
+  protect,
+  allowRoles("admin"),
+  getUserCards
+);
+
+/*
+|--------------------------------------------------------------------------
+| Create Card
+|--------------------------------------------------------------------------
+|
+| Customer:
+| - Creates card for themselves.
+| - cardController verifies TemplateAccess.
+|
+| Admin:
+| - Can optionally provide ownerId to create the card for a customer.
+|
+*/
+
+router.post(
+  "/",
+  protect,
+  createCard
+);
+
+/*
+|--------------------------------------------------------------------------
+| Get Card By ID
+|--------------------------------------------------------------------------
+|
+| Owner or admin.
+|
+*/
+
+router.get(
+  "/:id",
+  protect,
+  getCardById
+);
+
+/*
+|--------------------------------------------------------------------------
+| Update Card
+|--------------------------------------------------------------------------
+|
+| Owner or admin.
+|
+*/
+
+router.put(
+  "/:id",
+  protect,
+  updateCard
+);
+
+/*
+|--------------------------------------------------------------------------
+| Publish Card
+|--------------------------------------------------------------------------
+*/
+
+router.put(
+  "/:id/publish",
+  protect,
+  publishCard
+);
+
+/*
+|--------------------------------------------------------------------------
+| Unpublish Card
+|--------------------------------------------------------------------------
+*/
+
+router.put(
+  "/:id/unpublish",
+  protect,
+  unpublishCard
+);
+
+/*
+|--------------------------------------------------------------------------
+| Delete Card
+|--------------------------------------------------------------------------
+|
+| Owner or admin.
+|
+*/
+
+router.delete(
+  "/:id",
+  protect,
+  deleteCard
+);
 
 module.exports = router;

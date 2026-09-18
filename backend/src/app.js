@@ -8,22 +8,29 @@ const cardRoutes = require("./routes/cardRoutes");
 const templateAccessRoutes = require("./routes/templateAccessRoutes");
 const rsvpRoutes = require("./routes/rsvpRoutes");
 const assetRoutes = require("./routes/assetRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 
 const app = express();
 
-
-// ======================================================
-// MIDDLEWARE
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Middleware
+|--------------------------------------------------------------------------
+*/
 
 app.use(cors());
 
-app.use(express.json());
+app.use(
+  express.json({
+    limit: "2mb"
+  })
+);
 
-
-// ======================================================
-// HEALTH CHECK
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Health Check
+|--------------------------------------------------------------------------
+*/
 
 app.get("/api/health", (req, res) => {
   res.status(200).json({
@@ -32,29 +39,57 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// ROUTES
-// ======================================================
+app.use(
+  "/api/auth",
+  authRoutes
+);
 
-app.use("/api/auth", authRoutes);
+app.use(
+  "/api/users",
+  userRoutes
+);
 
-app.use("/api/users", userRoutes);
+app.use(
+  "/api/templates",
+  templateRoutes
+);
 
-app.use("/api/templates", templateRoutes);
+app.use(
+  "/api/cards",
+  cardRoutes
+);
 
-app.use("/api/cards", cardRoutes);
+app.use(
+  "/api/template-access",
+  templateAccessRoutes
+);
 
-app.use("/api/template-access", templateAccessRoutes);
+app.use(
+  "/api/rsvps",
+  rsvpRoutes
+);
 
-app.use("/api/rsvps", rsvpRoutes);
+app.use(
+  "/api/assets",
+  assetRoutes
+);
 
-app.use("/api/assets", assetRoutes);
+app.use(
+  "/api/dashboard",
+  dashboardRoutes
+);
 
-
-// ======================================================
-// 404 HANDLER
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| 404 Handler
+|--------------------------------------------------------------------------
+*/
 
 app.use((req, res) => {
   res.status(404).json({
@@ -63,19 +98,25 @@ app.use((req, res) => {
   });
 });
 
+/*
+|--------------------------------------------------------------------------
+| Global Error Handler
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// GLOBAL ERROR HANDLER
-// ======================================================
+app.use(
+  (error, req, res, next) => {
+    console.error(error);
 
-app.use((error, req, res, next) => {
-  console.error(error);
-
-  res.status(error.status || 500).json({
-    success: false,
-    message: error.message || "Internal server error"
-  });
-});
-
+    res.status(
+      error.status || 500
+    ).json({
+      success: false,
+      message:
+        error.message ||
+        "Internal server error"
+    });
+  }
+);
 
 module.exports = app;

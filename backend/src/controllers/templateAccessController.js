@@ -8,7 +8,11 @@ const Card = require("../models/Card");
 | Grant Template Access
 |--------------------------------------------------------------------------
 |
-| Admin grants a design/template to a customer.
+| Admin grants one use/event of a template to a customer.
+|
+| IMPORTANT:
+| The same customer may receive the same template multiple times.
+| Each grant creates a separate TemplateAccess record.
 |
 */
 
@@ -18,7 +22,9 @@ const grantTemplateAccess = async (req, res) => {
       userId,
       templateId,
       pricePaid,
-      notes
+      currency,
+      notes,
+      eventLabel
     } = req.body;
 
     if (!userId || !templateId) {
@@ -27,6 +33,12 @@ const grantTemplateAccess = async (req, res) => {
         message: "User and template are required"
       });
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate User
+    |--------------------------------------------------------------------------
+    */
 
     const user = await User.findById(userId);
 
@@ -44,80 +56,18 @@ const grantTemplateAccess = async (req, res) => {
       });
     }
 
-    const template = await Template.findById(
-      templateId
-    );
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Template
+    |--------------------------------------------------------------------------
+    */
+
+    const template = await Template.findById(templateId);
 
     if (!template) {
       return res.status(404).json({
         success: false,
         message: "Template not found"
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Check Existing Access
-    |--------------------------------------------------------------------------
-    */
-
-    const existingAccess =
-      await TemplateAccess.findOne({
-        user: userId,
-        template: templateId
-      });
-
-    if (existingAccess) {
-      if (existingAccess.status === "active") {
-        return res.status(400).json({
-          success: false,
-          message:
-            "This user already has access to this template"
-        });
-      }
-
-      /*
-      | If access existed but was disabled,
-      | restore it instead of creating a duplicate.
-      */
-
-      existingAccess.status = "active";
-      existingAccess.grantedBy =
-        req.user._id;
-      existingAccess.grantedAt =
-        new Date();
-
-      if (pricePaid !== undefined) {
-        existingAccess.pricePaid =
-          pricePaid;
-      }
-
-      if (notes !== undefined) {
-        existingAccess.notes = notes;
-      }
-
-      await existingAccess.save();
-
-      const restoredAccess =
-        await TemplateAccess.findById(
-          existingAccess._id
-        )
-          .populate(
-            "user",
-            "firstName lastName email role isActive"
-          )
-          .populate("template")
-          .populate("card")
-          .populate(
-            "grantedBy",
-            "firstName lastName email"
-          );
-
-      return res.status(200).json({
-        success: true,
-        message:
-          "Template access restored successfully",
-        access: restoredAccess
       });
     }
 
@@ -130,8 +80,7 @@ const grantTemplateAccess = async (req, res) => {
     let finalPricePaid = 0;
 
     if (pricePaid !== undefined) {
-      const parsedPrice =
-        Number(pricePaid);
+      const parsedPrice = Number(pricePaid);
 
       if (
         Number.isNaN(parsedPrice) ||
@@ -149,23 +98,57 @@ const grantTemplateAccess = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | Create Access
+    | Validate Currency
     |--------------------------------------------------------------------------
     */
 
-    const access =
-      await TemplateAccess.create({
-        user: userId,
-        template: templateId,
-        grantedBy: req.user._id,
-        pricePaid: finalPricePaid,
-        notes: notes || ""
-      });
+    let finalCurrency = "USD";
+
+    if (currency) {
+      finalCurrency = currency
+        .toString()
+        .trim()
+        .toUpperCase();
+
+      if (finalCurrency.length !== 3) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Currency must be a valid 3-letter currency code"
+        });
+      }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Create New Access
+    |--------------------------------------------------------------------------
+    |
+    | We deliberately DO NOT check whether the user already has this
+    | template.
+    |
+    | Example:
+    |
+    | Wedding Template A
+    |   ├── John's Wedding
+    |   └── John's Anniversary
+    |
+    | These are two separate access records.
+    |
+    */
+
+    const access = await TemplateAccess.create({
+      user: user._id,
+      template: template._id,
+      grantedBy: req.user._id,
+      pricePaid: finalPricePaid,
+      currency: finalCurrency,
+      notes: notes || "",
+      eventLabel: eventLabel || ""
+    });
 
     const populatedAccess =
-      await TemplateAccess.findById(
-        access._id
-      )
+      await TemplateAccess.findById(access._id)
         .populate(
           "user",
           "firstName lastName email role isActive"
@@ -179,15 +162,13 @@ const grantTemplateAccess = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message:
-        "Template access granted successfully",
+      message: "Template access granted successfully",
       access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to grant template access",
+      message: "Failed to grant template access",
       error: error.message
     });
   }
@@ -199,21 +180,17 @@ const grantTemplateAccess = async (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-const getMyTemplateAccess = async (
-  req,
-  res
-) => {
+const getMyTemplateAccess = async (req, res) => {
   try {
-    const access =
-      await TemplateAccess.find({
-        user: req.user._id,
-        status: "active"
-      })
-        .populate("template")
-        .populate("card")
-        .sort({
-          grantedAt: -1
-        });
+    const access = await TemplateAccess.find({
+      user: req.user._id,
+      status: "active"
+    })
+      .populate("template")
+      .populate("card")
+      .sort({
+        grantedAt: -1
+      });
 
     res.status(200).json({
       success: true,
@@ -223,8 +200,7 @@ const getMyTemplateAccess = async (
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to fetch template access",
+      message: "Failed to fetch template access",
       error: error.message
     });
   }
@@ -234,15 +210,22 @@ const getMyTemplateAccess = async (
 |--------------------------------------------------------------------------
 | Admin - Get All Template Access
 |--------------------------------------------------------------------------
+|
+| Optional filters:
+|
+| ?status=active
+| ?status=disabled
+| ?userId=...
+| ?templateId=...
+|
 */
 
-const getAllTemplateAccess = async (
-  req,
-  res
-) => {
+const getAllTemplateAccess = async (req, res) => {
   try {
     const {
-      status
+      status,
+      userId,
+      templateId
     } = req.query;
 
     const filter = {};
@@ -251,21 +234,28 @@ const getAllTemplateAccess = async (
       filter.status = status;
     }
 
-    const access =
-      await TemplateAccess.find(filter)
-        .populate(
-          "user",
-          "firstName lastName email role isActive"
-        )
-        .populate("template")
-        .populate("card")
-        .populate(
-          "grantedBy",
-          "firstName lastName email"
-        )
-        .sort({
-          createdAt: -1
-        });
+    if (userId) {
+      filter.user = userId;
+    }
+
+    if (templateId) {
+      filter.template = templateId;
+    }
+
+    const access = await TemplateAccess.find(filter)
+      .populate(
+        "user",
+        "firstName lastName email role isActive"
+      )
+      .populate("template")
+      .populate("card")
+      .populate(
+        "grantedBy",
+        "firstName lastName email"
+      )
+      .sort({
+        createdAt: -1
+      });
 
     res.status(200).json({
       success: true,
@@ -275,8 +265,7 @@ const getAllTemplateAccess = async (
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to fetch template access",
+      message: "Failed to fetch template access",
       error: error.message
     });
   }
@@ -284,14 +273,11 @@ const getAllTemplateAccess = async (
 
 /*
 |--------------------------------------------------------------------------
-| Admin - Get Template Access For Specific User
+| Admin - Get Access For Specific User
 |--------------------------------------------------------------------------
 */
 
-const getUserTemplateAccess = async (
-  req,
-  res
-) => {
+const getUserTemplateAccess = async (req, res) => {
   try {
     const user = await User.findById(
       req.params.userId
@@ -304,19 +290,18 @@ const getUserTemplateAccess = async (
       });
     }
 
-    const access =
-      await TemplateAccess.find({
-        user: user._id
-      })
-        .populate("template")
-        .populate("card")
-        .populate(
-          "grantedBy",
-          "firstName lastName email"
-        )
-        .sort({
-          createdAt: -1
-        });
+    const access = await TemplateAccess.find({
+      user: user._id
+    })
+      .populate("template")
+      .populate("card")
+      .populate(
+        "grantedBy",
+        "firstName lastName email"
+      )
+      .sort({
+        createdAt: -1
+      });
 
     res.status(200).json({
       success: true,
@@ -336,13 +321,56 @@ const getUserTemplateAccess = async (
 
 /*
 |--------------------------------------------------------------------------
-| Admin - Attach Card To Template Access
+| Admin - Get Template Access By ID
+|--------------------------------------------------------------------------
+*/
+
+const getTemplateAccessById = async (req, res) => {
+  try {
+    const access = await TemplateAccess.findById(
+      req.params.id
+    )
+      .populate(
+        "user",
+        "firstName lastName email role isActive"
+      )
+      .populate("template")
+      .populate("card")
+      .populate(
+        "grantedBy",
+        "firstName lastName email"
+      );
+
+    if (!access) {
+      return res.status(404).json({
+        success: false,
+        message: "Template access not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      access
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch template access",
+      error: error.message
+    });
+  }
+};
+
+/*
+|--------------------------------------------------------------------------
+| Admin - Attach Card
 |--------------------------------------------------------------------------
 |
-| Card must:
-| - exist
-| - belong to the same user
+| The card must:
+|
+| - belong to the same customer
 | - use the same template
+| - not already belong to another TemplateAccess
 |
 */
 
@@ -359,16 +387,14 @@ const attachCard = async (req, res) => {
       });
     }
 
-    const access =
-      await TemplateAccess.findById(
-        req.params.id
-      );
+    const access = await TemplateAccess.findById(
+      req.params.id
+    );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message:
-          "Template access not found"
+        message: "Template access not found"
       });
     }
 
@@ -380,9 +406,7 @@ const attachCard = async (req, res) => {
       });
     }
 
-    const card = await Card.findById(
-      cardId
-    );
+    const card = await Card.findById(cardId);
 
     if (!card) {
       return res.status(404).json({
@@ -393,7 +417,7 @@ const attachCard = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | Validate Card Owner
+    | Verify Owner
     |--------------------------------------------------------------------------
     */
 
@@ -404,13 +428,13 @@ const attachCard = async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          "Card does not belong to the user who owns this template access"
+          "Card does not belong to this template access user"
       });
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Validate Template
+    | Verify Template
     |--------------------------------------------------------------------------
     */
 
@@ -427,7 +451,7 @@ const attachCard = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | Prevent Card Being Attached Elsewhere
+    | Check Existing Card Assignment
     |--------------------------------------------------------------------------
     */
 
@@ -443,7 +467,7 @@ const attachCard = async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          "This card is already attached to another template access record"
+          "This card is already attached to another template access"
       });
     }
 
@@ -452,27 +476,72 @@ const attachCard = async (req, res) => {
     await access.save();
 
     const populatedAccess =
-      await TemplateAccess.findById(
-        access._id
-      )
+      await TemplateAccess.findById(access._id)
         .populate(
           "user",
           "firstName lastName email role isActive"
         )
         .populate("template")
-        .populate("card");
+        .populate("card")
+        .populate(
+          "grantedBy",
+          "firstName lastName email"
+        );
 
     res.status(200).json({
       success: true,
-      message:
-        "Card attached successfully",
+      message: "Card attached successfully",
       access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to attach card",
+      message: "Failed to attach card",
+      error: error.message
+    });
+  }
+};
+
+/*
+|--------------------------------------------------------------------------
+| Admin - Detach Card
+|--------------------------------------------------------------------------
+*/
+
+const detachCard = async (req, res) => {
+  try {
+    const access = await TemplateAccess.findById(
+      req.params.id
+    );
+
+    if (!access) {
+      return res.status(404).json({
+        success: false,
+        message: "Template access not found"
+      });
+    }
+
+    if (!access.card) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "No card is attached to this template access"
+      });
+    }
+
+    access.card = null;
+
+    await access.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Card detached successfully",
+      access
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to detach card",
       error: error.message
     });
   }
@@ -482,39 +551,30 @@ const attachCard = async (req, res) => {
 |--------------------------------------------------------------------------
 | Admin - Update Template Access
 |--------------------------------------------------------------------------
-|
-| Editable:
-| - pricePaid
-| - notes
-|
 */
 
-const updateTemplateAccess = async (
-  req,
-  res
-) => {
+const updateTemplateAccess = async (req, res) => {
   try {
     const {
       pricePaid,
-      notes
+      currency,
+      notes,
+      eventLabel
     } = req.body;
 
-    const access =
-      await TemplateAccess.findById(
-        req.params.id
-      );
+    const access = await TemplateAccess.findById(
+      req.params.id
+    );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message:
-          "Template access not found"
+        message: "Template access not found"
       });
     }
 
     if (pricePaid !== undefined) {
-      const parsedPrice =
-        Number(pricePaid);
+      const parsedPrice = Number(pricePaid);
 
       if (
         Number.isNaN(parsedPrice) ||
@@ -530,16 +590,35 @@ const updateTemplateAccess = async (
       access.pricePaid = parsedPrice;
     }
 
+    if (currency !== undefined) {
+      const normalizedCurrency = currency
+        .toString()
+        .trim()
+        .toUpperCase();
+
+      if (normalizedCurrency.length !== 3) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Currency must be a valid 3-letter currency code"
+        });
+      }
+
+      access.currency = normalizedCurrency;
+    }
+
     if (notes !== undefined) {
       access.notes = notes;
+    }
+
+    if (eventLabel !== undefined) {
+      access.eventLabel = eventLabel;
     }
 
     await access.save();
 
     const populatedAccess =
-      await TemplateAccess.findById(
-        access._id
-      )
+      await TemplateAccess.findById(access._id)
         .populate(
           "user",
           "firstName lastName email role isActive"
@@ -553,15 +632,13 @@ const updateTemplateAccess = async (
 
     res.status(200).json({
       success: true,
-      message:
-        "Template access updated successfully",
+      message: "Template access updated successfully",
       access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to update template access",
+      message: "Failed to update template access",
       error: error.message
     });
   }
@@ -569,29 +646,25 @@ const updateTemplateAccess = async (
 
 /*
 |--------------------------------------------------------------------------
-| Admin - Revoke Template Access
+| Admin - Revoke Access
 |--------------------------------------------------------------------------
 |
 | Soft revoke.
-| Existing Card is NOT deleted.
+|
+| Card and RSVP information are preserved.
 |
 */
 
-const revokeTemplateAccess = async (
-  req,
-  res
-) => {
+const revokeTemplateAccess = async (req, res) => {
   try {
-    const access =
-      await TemplateAccess.findById(
-        req.params.id
-      );
+    const access = await TemplateAccess.findById(
+      req.params.id
+    );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message:
-          "Template access not found"
+        message: "Template access not found"
       });
     }
 
@@ -609,15 +682,13 @@ const revokeTemplateAccess = async (
 
     res.status(200).json({
       success: true,
-      message:
-        "Template access revoked successfully",
+      message: "Template access revoked successfully",
       access
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to revoke template access",
+      message: "Failed to revoke template access",
       error: error.message
     });
   }
@@ -625,25 +696,20 @@ const revokeTemplateAccess = async (
 
 /*
 |--------------------------------------------------------------------------
-| Admin - Restore Template Access
+| Admin - Restore Access
 |--------------------------------------------------------------------------
 */
 
-const restoreTemplateAccess = async (
-  req,
-  res
-) => {
+const restoreTemplateAccess = async (req, res) => {
   try {
-    const access =
-      await TemplateAccess.findById(
-        req.params.id
-      );
+    const access = await TemplateAccess.findById(
+      req.params.id
+    );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message:
-          "Template access not found"
+        message: "Template access not found"
       });
     }
 
@@ -654,6 +720,12 @@ const restoreTemplateAccess = async (
           "Template access is already active"
       });
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Verify Customer Still Exists
+    |--------------------------------------------------------------------------
+    */
 
     const user = await User.findById(
       access.user
@@ -675,10 +747,15 @@ const restoreTemplateAccess = async (
       });
     }
 
-    const template =
-      await Template.findById(
-        access.template
-      );
+    /*
+    |--------------------------------------------------------------------------
+    | Verify Template Still Exists
+    |--------------------------------------------------------------------------
+    */
+
+    const template = await Template.findById(
+      access.template
+    );
 
     if (!template) {
       return res.status(404).json({
@@ -689,17 +766,13 @@ const restoreTemplateAccess = async (
     }
 
     access.status = "active";
-    access.grantedBy =
-      req.user._id;
-    access.grantedAt =
-      new Date();
+    access.grantedBy = req.user._id;
+    access.grantedAt = new Date();
 
     await access.save();
 
     const populatedAccess =
-      await TemplateAccess.findById(
-        access._id
-      )
+      await TemplateAccess.findById(access._id)
         .populate(
           "user",
           "firstName lastName email role isActive"
@@ -713,15 +786,13 @@ const restoreTemplateAccess = async (
 
     res.status(200).json({
       success: true,
-      message:
-        "Template access restored successfully",
+      message: "Template access restored successfully",
       access: populatedAccess
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to restore template access",
+      message: "Failed to restore template access",
       error: error.message
     });
   }
@@ -732,27 +803,22 @@ const restoreTemplateAccess = async (
 | Admin - Delete Template Access
 |--------------------------------------------------------------------------
 |
-| Hard deletion.
+| Hard deletion of the access record.
 |
-| Card itself is NOT deleted.
+| The associated card is NOT deleted.
 |
 */
 
-const deleteTemplateAccess = async (
-  req,
-  res
-) => {
+const deleteTemplateAccess = async (req, res) => {
   try {
-    const access =
-      await TemplateAccess.findById(
-        req.params.id
-      );
+    const access = await TemplateAccess.findById(
+      req.params.id
+    );
 
     if (!access) {
       return res.status(404).json({
         success: false,
-        message:
-          "Template access not found"
+        message: "Template access not found"
       });
     }
 
@@ -760,14 +826,12 @@ const deleteTemplateAccess = async (
 
     res.status(200).json({
       success: true,
-      message:
-        "Template access deleted successfully"
+      message: "Template access deleted successfully"
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message:
-        "Failed to delete template access",
+      message: "Failed to delete template access",
       error: error.message
     });
   }
@@ -778,7 +842,9 @@ module.exports = {
   getMyTemplateAccess,
   getAllTemplateAccess,
   getUserTemplateAccess,
+  getTemplateAccessById,
   attachCard,
+  detachCard,
   updateTemplateAccess,
   revokeTemplateAccess,
   restoreTemplateAccess,

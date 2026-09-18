@@ -7,13 +7,15 @@ const RSVP = require("../models/RSVP");
 | Customer Dashboard
 |--------------------------------------------------------------------------
 |
-| Returns everything the logged-in customer needs for their dashboard:
+| Returns everything needed for the customer's main dashboard:
 |
-| - Template/design access
+| - Account information
+| - Purchased/granted designs
+| - Event labels
 | - Cards
-| - Card status
-| - Public slug
+| - Share links
 | - RSVP statistics
+| - Dashboard totals
 |
 */
 
@@ -23,19 +25,20 @@ const getMyDashboard = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | Get Template Access
+    | Get Active Template Access
     |--------------------------------------------------------------------------
     */
 
-    const templateAccess = await TemplateAccess.find({
-      user: userId,
-      status: "active"
-    })
-      .populate("template")
-      .populate("card")
-      .sort({
-        createdAt: -1
-      });
+    const templateAccess =
+      await TemplateAccess.find({
+        user: userId,
+        status: "active"
+      })
+        .populate("template")
+        .populate("card")
+        .sort({
+          grantedAt: -1
+        });
 
     /*
     |--------------------------------------------------------------------------
@@ -53,7 +56,7 @@ const getMyDashboard = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | Get RSVP Statistics
+    | RSVP Statistics
     |--------------------------------------------------------------------------
     */
 
@@ -78,11 +81,9 @@ const getMyDashboard = async (req, res) => {
               card: "$card",
               status: "$status"
             },
-
             responses: {
               $sum: 1
             },
-
             guests: {
               $sum: "$guestsCount"
             }
@@ -116,16 +117,23 @@ const getMyDashboard = async (req, res) => {
       rsvpMap[cardId].totalResponses +=
         stat.responses;
 
-      if (stat._id.status === "attending") {
-        rsvpMap[cardId].attendingResponses +=
+      if (
+        stat._id.status === "attending"
+      ) {
+        rsvpMap[
+          cardId
+        ].attendingResponses +=
           stat.responses;
 
-        rsvpMap[cardId].totalGuestsAttending +=
+        rsvpMap[
+          cardId
+        ].totalGuestsAttending +=
           stat.guests;
       }
 
       if (
-        stat._id.status === "not-attending"
+        stat._id.status ===
+        "not-attending"
       ) {
         rsvpMap[
           cardId
@@ -133,15 +141,19 @@ const getMyDashboard = async (req, res) => {
           stat.responses;
       }
 
-      if (stat._id.status === "maybe") {
-        rsvpMap[cardId].maybeResponses +=
+      if (
+        stat._id.status === "maybe"
+      ) {
+        rsvpMap[
+          cardId
+        ].maybeResponses +=
           stat.responses;
       }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Prepare Cards For Dashboard
+    | Format Cards
     |--------------------------------------------------------------------------
     */
 
@@ -150,7 +162,7 @@ const getMyDashboard = async (req, res) => {
         const cardId =
           card._id.toString();
 
-        const statistics =
+        const rsvp =
           rsvpMap[cardId] || {
             totalResponses: 0,
             attendingResponses: 0,
@@ -158,6 +170,18 @@ const getMyDashboard = async (req, res) => {
             maybeResponses: 0,
             totalGuestsAttending: 0
           };
+
+        const expired =
+          card.expiresAt &&
+          new Date(card.expiresAt) <=
+            new Date();
+
+        const shareAvailable =
+          card.status === "published" &&
+          !expired &&
+          card.slug &&
+          card.settings?.shareEnabled !==
+            false;
 
         return {
           id: card._id,
@@ -170,50 +194,116 @@ const getMyDashboard = async (req, res) => {
 
           template: card.template,
 
+          data: card.data,
+
+          customization:
+            card.customization,
+
           settings: card.settings,
 
-          publishedAt: card.publishedAt,
+          publishedAt:
+            card.publishedAt,
 
-          expiresAt: card.expiresAt,
+          expiresAt:
+            card.expiresAt,
 
-          createdAt: card.createdAt,
+          isExpired: Boolean(expired),
 
-          updatedAt: card.updatedAt,
+          sharePath: shareAvailable
+            ? `/card/${card.slug}`
+            : null,
 
-          sharePath:
-            card.status === "published" &&
-            card.slug &&
-            card.settings?.shareEnabled !== false
-              ? `/card/${card.slug}`
-              : null,
+          rsvp,
 
-          rsvp: statistics
+          createdAt:
+            card.createdAt,
+
+          updatedAt:
+            card.updatedAt
         };
       }
     );
 
     /*
     |--------------------------------------------------------------------------
-    | Prepare Template Access
+    | Create Quick Card Lookup
     |--------------------------------------------------------------------------
+    */
+
+    const cardMap = {};
+
+    for (const card of dashboardCards) {
+      cardMap[card.id.toString()] =
+        card;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Format Purchased / Granted Designs
+    |--------------------------------------------------------------------------
+    |
+    | Every TemplateAccess represents one event/use.
+    |
+    | Example:
+    |
+    | Elegant Wedding Template
+    |
+    | Access #1
+    | → John & Maria Wedding
+    | → Card A
+    |
+    | Access #2
+    | → Anniversary
+    | → Card B
+    |
     */
 
     const designs = templateAccess.map(
       (access) => {
+        let attachedCard = null;
+
+        if (access.card) {
+          const cardId =
+            access.card._id
+              ? access.card._id.toString()
+              : access.card.toString();
+
+          attachedCard =
+            cardMap[cardId] || null;
+        }
+
         return {
           accessId: access._id,
 
-          template: access.template,
+          eventLabel:
+            access.eventLabel || "",
 
-          card: access.card,
+          template:
+            access.template,
 
-          status: access.status,
+          status:
+            access.status,
 
-          pricePaid: access.pricePaid,
+          card:
+            attachedCard,
 
-          notes: access.notes,
+          hasCard:
+            Boolean(access.card),
 
-          grantedAt: access.grantedAt
+          pricePaid:
+            access.pricePaid,
+
+          currency:
+            access.currency || "USD",
+
+          notes:
+            access.notes || "",
+
+          grantedAt:
+            access.grantedAt,
+
+          createdAt:
+            access.createdAt
         };
       }
     );
@@ -224,16 +314,22 @@ const getMyDashboard = async (req, res) => {
     |--------------------------------------------------------------------------
     */
 
-    const totalPublishedCards =
+    const publishedCards =
       dashboardCards.filter(
         (card) =>
-          card.status === "published"
+          card.status === "published" &&
+          !card.isExpired
       ).length;
 
-    const totalDraftCards =
+    const draftCards =
       dashboardCards.filter(
         (card) =>
           card.status === "draft"
+      ).length;
+
+    const expiredCards =
+      dashboardCards.filter(
+        (card) => card.isExpired
       ).length;
 
     const totalRSVPResponses =
@@ -248,9 +344,16 @@ const getMyDashboard = async (req, res) => {
       dashboardCards.reduce(
         (total, card) =>
           total +
-          card.rsvp.totalGuestsAttending,
+          card.rsvp
+            .totalGuestsAttending,
         0
       );
+
+    const unusedDesigns =
+      designs.filter(
+        (design) =>
+          !design.hasCard
+      ).length;
 
     /*
     |--------------------------------------------------------------------------
@@ -263,31 +366,48 @@ const getMyDashboard = async (req, res) => {
 
       user: {
         id: req.user._id,
-        firstName: req.user.firstName,
-        lastName: req.user.lastName,
-        email: req.user.email,
-        role: req.user.role
+        firstName:
+          req.user.firstName,
+        lastName:
+          req.user.lastName,
+        email:
+          req.user.email,
+        role:
+          req.user.role
       },
 
       overview: {
-        totalDesigns: designs.length,
-        totalCards: dashboardCards.length,
-        publishedCards: totalPublishedCards,
-        draftCards: totalDraftCards,
+        totalDesigns:
+          designs.length,
+
+        unusedDesigns,
+
+        totalCards:
+          dashboardCards.length,
+
+        publishedCards,
+
+        draftCards,
+
+        expiredCards,
+
         totalRSVPResponses,
+
         totalGuestsAttending
       },
 
       designs,
 
-      cards: dashboardCards
+      cards:
+        dashboardCards
     });
   } catch (error) {
     res.status(500).json({
       success: false,
       message:
         "Failed to load dashboard",
-      error: error.message
+      error:
+        error.message
     });
   }
 };

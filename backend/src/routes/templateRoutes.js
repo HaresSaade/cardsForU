@@ -4,35 +4,85 @@ const {
   createTemplate,
   getTemplates,
   getTemplateBySlug,
+  getAllTemplates,
   getTemplateById,
   updateTemplate,
-  deleteTemplate,
   publishTemplate,
-  archiveTemplate
+  archiveTemplate,
+  moveTemplateToDraft,
+  deleteTemplate
 } = require("../controllers/templateController");
 
-const { protect } = require("../middleware/authMiddleware");
-const { allowRoles } = require("../middleware/roleMiddleware");
+const {
+  protect
+} = require("../middleware/authMiddleware");
+
+const {
+  allowRoles
+} = require("../middleware/roleMiddleware");
 
 const router = express.Router();
 
+/*
+|--------------------------------------------------------------------------
+| Public Routes
+|--------------------------------------------------------------------------
+|
+| Only published templates are returned by these endpoints.
+|
+*/
 
-// ======================================================
-// PUBLIC ROUTES
-// ======================================================
+/*
+| Public template catalog
+|
+| Optional filters:
+| /api/templates?category=wedding
+| /api/templates?type=dynamic
+*/
+router.get(
+  "/",
+  getTemplates
+);
 
-// Get all templates
-router.get("/", getTemplates);
+/*
+| Public template by slug
+|
+| Example:
+| /api/templates/slug/elegant-wedding-01
+*/
+router.get(
+  "/slug/:slug",
+  getTemplateBySlug
+);
 
-// Get one template by slug
-router.get("/slug/:slug", getTemplateBySlug);
+/*
+|--------------------------------------------------------------------------
+| Admin / Designer Routes
+|--------------------------------------------------------------------------
+*/
 
+/*
+| Get all templates
+|
+| Includes:
+| - draft
+| - published
+| - archived
+|
+| Optional:
+| /api/templates/manage?status=draft
+| /api/templates/manage?category=wedding
+*/
+router.get(
+  "/manage",
+  protect,
+  allowRoles("admin", "designer"),
+  getAllTemplates
+);
 
-// ======================================================
-// ADMIN / DESIGNER ROUTES
-// ======================================================
-
-// Get template by ID
+/*
+| Get a template by MongoDB ID
+*/
 router.get(
   "/id/:id",
   protect,
@@ -40,7 +90,9 @@ router.get(
   getTemplateById
 );
 
-// Create template
+/*
+| Create template
+*/
 router.post(
   "/",
   protect,
@@ -48,7 +100,9 @@ router.post(
   createTemplate
 );
 
-// Update template
+/*
+| Update template
+*/
 router.put(
   "/:id",
   protect,
@@ -56,7 +110,15 @@ router.put(
   updateTemplate
 );
 
-// Publish template
+/*
+|--------------------------------------------------------------------------
+| Template Status
+|--------------------------------------------------------------------------
+*/
+
+/*
+| Publish template
+*/
 router.put(
   "/:id/publish",
   protect,
@@ -64,7 +126,9 @@ router.put(
   publishTemplate
 );
 
-// Archive template
+/*
+| Archive template
+*/
 router.put(
   "/:id/archive",
   protect,
@@ -72,13 +136,33 @@ router.put(
   archiveTemplate
 );
 
-// Delete template
+/*
+| Move template back to draft
+*/
+router.put(
+  "/:id/draft",
+  protect,
+  allowRoles("admin", "designer"),
+  moveTemplateToDraft
+);
+
+/*
+|--------------------------------------------------------------------------
+| Delete Template
+|--------------------------------------------------------------------------
+|
+| Admin only.
+|
+| Controller prevents deletion when the template is already referenced
+| by Cards or TemplateAccess records.
+|
+*/
+
 router.delete(
   "/:id",
   protect,
   allowRoles("admin"),
   deleteTemplate
 );
-
 
 module.exports = router;

@@ -1,9 +1,35 @@
 const Template = require("../models/Template");
+const Card = require("../models/Card");
+const TemplateAccess = require("../models/TemplateAccess");
 
+/*
+|--------------------------------------------------------------------------
+| Helper Functions
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// CREATE TEMPLATE
-// ======================================================
+const normalizeSlug = (slug) => {
+  if (!slug) {
+    return undefined;
+  }
+
+  return slug
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+};
+
+/*
+|--------------------------------------------------------------------------
+| Create Template
+|--------------------------------------------------------------------------
+|
+| Admin / Designer
+|
+*/
 
 const createTemplate = async (req, res) => {
   try {
@@ -22,7 +48,25 @@ const createTemplate = async (req, res) => {
       settings
     } = req.body;
 
-    const existingTemplate = await Template.findOne({ slug });
+    if (!name || !slug || !category) {
+      return res.status(400).json({
+        success: false,
+        message: "Name, slug and category are required"
+      });
+    }
+
+    const normalizedSlug = normalizeSlug(slug);
+
+    if (!normalizedSlug) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid template slug"
+      });
+    }
+
+    const existingTemplate = await Template.findOne({
+      slug: normalizedSlug
+    });
 
     if (existingTemplate) {
       return res.status(400).json({
@@ -33,7 +77,7 @@ const createTemplate = async (req, res) => {
 
     const template = await Template.create({
       name,
-      slug,
+      slug: normalizedSlug,
       category,
       type,
       thumbnail,
@@ -41,16 +85,23 @@ const createTemplate = async (req, res) => {
       currency,
       status,
       dimensions,
-      fields,
-      elements,
-      settings,
+      fields: fields || [],
+      elements: elements || [],
+      settings: settings || {},
       createdBy: req.user._id
     });
+
+    const populatedTemplate = await Template.findById(
+      template._id
+    ).populate(
+      "createdBy",
+      "firstName lastName email role"
+    );
 
     res.status(201).json({
       success: true,
       message: "Template created successfully",
-      template
+      template: populatedTemplate
     });
   } catch (error) {
     res.status(500).json({
@@ -61,16 +112,46 @@ const createTemplate = async (req, res) => {
   }
 };
 
-
-// ======================================================
-// GET ALL TEMPLATES
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Public - Get Published Templates
+|--------------------------------------------------------------------------
+|
+| This is the public template catalog.
+|
+| Draft and archived templates are NOT exposed.
+|
+| Optional filters:
+|
+| ?category=wedding
+| ?type=dynamic
+|
+*/
 
 const getTemplates = async (req, res) => {
   try {
-    const templates = await Template.find()
-      .populate("createdBy", "firstName lastName email")
-      .sort({ createdAt: -1 });
+    const {
+      category,
+      type
+    } = req.query;
+
+    const filter = {
+      status: "published"
+    };
+
+    if (category) {
+      filter.category = category;
+    }
+
+    if (type) {
+      filter.type = type;
+    }
+
+    const templates = await Template.find(filter)
+      .select("-createdBy")
+      .sort({
+        createdAt: -1
+      });
 
     res.status(200).json({
       success: true,
@@ -86,16 +167,22 @@ const getTemplates = async (req, res) => {
   }
 };
 
-
-// ======================================================
-// GET TEMPLATE BY SLUG
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Public - Get Published Template By Slug
+|--------------------------------------------------------------------------
+*/
 
 const getTemplateBySlug = async (req, res) => {
   try {
+    const normalizedSlug = normalizeSlug(
+      req.params.slug
+    );
+
     const template = await Template.findOne({
-      slug: req.params.slug
-    }).populate("createdBy", "firstName lastName email");
+      slug: normalizedSlug,
+      status: "published"
+    }).select("-createdBy");
 
     if (!template) {
       return res.status(404).json({
@@ -117,16 +204,77 @@ const getTemplateBySlug = async (req, res) => {
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Admin / Designer - Get All Templates
+|--------------------------------------------------------------------------
+|
+| Includes:
+| - draft
+| - published
+| - archived
+|
+*/
 
-// ======================================================
-// GET TEMPLATE BY ID
-// ======================================================
+const getAllTemplates = async (req, res) => {
+  try {
+    const {
+      status,
+      category,
+      type
+    } = req.query;
+
+    const filter = {};
+
+    if (status) {
+      filter.status = status;
+    }
+
+    if (category) {
+      filter.category = category;
+    }
+
+    if (type) {
+      filter.type = type;
+    }
+
+    const templates = await Template.find(filter)
+      .populate(
+        "createdBy",
+        "firstName lastName email role"
+      )
+      .sort({
+        createdAt: -1
+      });
+
+    res.status(200).json({
+      success: true,
+      count: templates.length,
+      templates
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch templates",
+      error: error.message
+    });
+  }
+};
+
+/*
+|--------------------------------------------------------------------------
+| Admin / Designer - Get Template By ID
+|--------------------------------------------------------------------------
+*/
 
 const getTemplateById = async (req, res) => {
   try {
     const template = await Template.findById(
       req.params.id
-    ).populate("createdBy", "firstName lastName email");
+    ).populate(
+      "createdBy",
+      "firstName lastName email role"
+    );
 
     if (!template) {
       return res.status(404).json({
@@ -148,22 +296,17 @@ const getTemplateById = async (req, res) => {
   }
 };
 
-
-// ======================================================
-// UPDATE TEMPLATE
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Update Template
+|--------------------------------------------------------------------------
+|
+| Admin / Designer
+|
+*/
 
 const updateTemplate = async (req, res) => {
   try {
-    const template = await Template.findById(req.params.id);
-
-    if (!template) {
-      return res.status(404).json({
-        success: false,
-        message: "Template not found"
-      });
-    }
-
     const {
       name,
       slug,
@@ -172,44 +315,111 @@ const updateTemplate = async (req, res) => {
       thumbnail,
       price,
       currency,
-      status,
       dimensions,
       fields,
       elements,
       settings
     } = req.body;
 
-    if (slug && slug !== template.slug) {
-      const existingTemplate = await Template.findOne({ slug });
+    const template = await Template.findById(
+      req.params.id
+    );
 
-      if (existingTemplate) {
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: "Template not found"
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Update Slug
+    |--------------------------------------------------------------------------
+    */
+
+    if (slug !== undefined) {
+      const normalizedSlug = normalizeSlug(slug);
+
+      if (!normalizedSlug) {
         return res.status(400).json({
           success: false,
-          message: "A template with this slug already exists"
+          message: "Invalid template slug"
         });
       }
 
-      template.slug = slug;
+      if (normalizedSlug !== template.slug) {
+        const existingTemplate = await Template.findOne({
+          slug: normalizedSlug,
+          _id: {
+            $ne: template._id
+          }
+        });
+
+        if (existingTemplate) {
+          return res.status(400).json({
+            success: false,
+            message: "A template with this slug already exists"
+          });
+        }
+      }
+
+      template.slug = normalizedSlug;
     }
 
-    if (name !== undefined) template.name = name;
-    if (category !== undefined) template.category = category;
-    if (type !== undefined) template.type = type;
-    if (thumbnail !== undefined) template.thumbnail = thumbnail;
-    if (price !== undefined) template.price = price;
-    if (currency !== undefined) template.currency = currency;
-    if (status !== undefined) template.status = status;
-    if (dimensions !== undefined) template.dimensions = dimensions;
-    if (fields !== undefined) template.fields = fields;
-    if (elements !== undefined) template.elements = elements;
-    if (settings !== undefined) template.settings = settings;
+    if (name !== undefined) {
+      template.name = name;
+    }
+
+    if (category !== undefined) {
+      template.category = category;
+    }
+
+    if (type !== undefined) {
+      template.type = type;
+    }
+
+    if (thumbnail !== undefined) {
+      template.thumbnail = thumbnail;
+    }
+
+    if (price !== undefined) {
+      template.price = price;
+    }
+
+    if (currency !== undefined) {
+      template.currency = currency;
+    }
+
+    if (dimensions !== undefined) {
+      template.dimensions = dimensions;
+    }
+
+    if (fields !== undefined) {
+      template.fields = fields;
+    }
+
+    if (elements !== undefined) {
+      template.elements = elements;
+    }
+
+    if (settings !== undefined) {
+      template.settings = settings;
+    }
 
     await template.save();
+
+    const populatedTemplate = await Template.findById(
+      template._id
+    ).populate(
+      "createdBy",
+      "firstName lastName email role"
+    );
 
     res.status(200).json({
       success: true,
       message: "Template updated successfully",
-      template
+      template: populatedTemplate
     });
   } catch (error) {
     res.status(500).json({
@@ -220,43 +430,17 @@ const updateTemplate = async (req, res) => {
   }
 };
 
-
-// ======================================================
-// DELETE TEMPLATE
-// ======================================================
-
-const deleteTemplate = async (req, res) => {
-  try {
-    const template = await Template.findByIdAndDelete(req.params.id);
-
-    if (!template) {
-      return res.status(404).json({
-        success: false,
-        message: "Template not found"
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "Template deleted successfully"
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to delete template",
-      error: error.message
-    });
-  }
-};
-
-
-// ======================================================
-// PUBLISH TEMPLATE
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Publish Template
+|--------------------------------------------------------------------------
+*/
 
 const publishTemplate = async (req, res) => {
   try {
-    const template = await Template.findById(req.params.id);
+    const template = await Template.findById(
+      req.params.id
+    );
 
     if (!template) {
       return res.status(404).json({
@@ -283,14 +467,21 @@ const publishTemplate = async (req, res) => {
   }
 };
 
-
-// ======================================================
-// ARCHIVE TEMPLATE
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| Archive Template
+|--------------------------------------------------------------------------
+|
+| Existing cards continue referencing the template.
+| The template simply disappears from the public catalog.
+|
+*/
 
 const archiveTemplate = async (req, res) => {
   try {
-    const template = await Template.findById(req.params.id);
+    const template = await Template.findById(
+      req.params.id
+    );
 
     if (!template) {
       return res.status(404).json({
@@ -317,18 +508,120 @@ const archiveTemplate = async (req, res) => {
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Move Template Back To Draft
+|--------------------------------------------------------------------------
+*/
 
-// ======================================================
-// EXPORTS
-// ======================================================
+const moveTemplateToDraft = async (req, res) => {
+  try {
+    const template = await Template.findById(
+      req.params.id
+    );
+
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: "Template not found"
+      });
+    }
+
+    template.status = "draft";
+
+    await template.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Template moved to draft successfully",
+      template
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to move template to draft",
+      error: error.message
+    });
+  }
+};
+
+/*
+|--------------------------------------------------------------------------
+| Delete Template
+|--------------------------------------------------------------------------
+|
+| Admin only.
+|
+| We DO NOT allow deleting a template if:
+|
+| - a Card uses it
+| - a customer has TemplateAccess to it
+|
+| In those cases the admin should archive it instead.
+|
+*/
+
+const deleteTemplate = async (req, res) => {
+  try {
+    const template = await Template.findById(
+      req.params.id
+    );
+
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: "Template not found"
+      });
+    }
+
+    const cardExists = await Card.exists({
+      template: template._id
+    });
+
+    if (cardExists) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Template cannot be deleted because cards are using it. Archive it instead."
+      });
+    }
+
+    const accessExists = await TemplateAccess.exists({
+      template: template._id
+    });
+
+    if (accessExists) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Template cannot be deleted because customers have access to it. Archive it instead."
+      });
+    }
+
+    await template.deleteOne();
+
+    res.status(200).json({
+      success: true,
+      message: "Template deleted successfully"
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete template",
+      error: error.message
+    });
+  }
+};
 
 module.exports = {
   createTemplate,
   getTemplates,
   getTemplateBySlug,
+  getAllTemplates,
   getTemplateById,
   updateTemplate,
-  deleteTemplate,
   publishTemplate,
-  archiveTemplate
+  archiveTemplate,
+  moveTemplateToDraft,
+  deleteTemplate
 };

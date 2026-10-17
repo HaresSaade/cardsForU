@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 
@@ -9,6 +10,7 @@ const templateAccessRoutes = require("./routes/templateAccessRoutes");
 const rsvpRoutes = require("./routes/rsvpRoutes");
 const assetRoutes = require("./routes/assetRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
+const invitationRecipientRoutes = require("./routes/invitationRecipientRoutes");
 
 const app = express();
 
@@ -26,6 +28,13 @@ app.use(
   })
 );
 
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "2mb"
+  })
+);
+
 /*
 |--------------------------------------------------------------------------
 | Health Check
@@ -35,7 +44,7 @@ app.use(
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
-    message: "CardsForU API is running"
+    message: "cardsforuleb API is running"
   });
 });
 
@@ -87,6 +96,28 @@ app.use(
 
 /*
 |--------------------------------------------------------------------------
+| Invitation Recipient Routes
+|--------------------------------------------------------------------------
+|
+| Guest list management:
+| - Create recipients
+| - Bulk add recipients
+| - View guest lists
+| - Update recipient information
+| - Link RSVP responses
+| - Track invitation delivery
+| - View guest statistics
+| - Delete recipients
+|
+*/
+
+app.use(
+  "/api/invitation-recipients",
+  invitationRecipientRoutes
+);
+
+/*
+|--------------------------------------------------------------------------
 | 404 Handler
 |--------------------------------------------------------------------------
 */
@@ -104,19 +135,17 @@ app.use((req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.use(
-  (error, req, res, next) => {
-    console.error(error);
+app.use((error, req, res, next) => {
+  console.error(error);
 
-    res.status(
-      error.status || 500
-    ).json({
-      success: false,
-      message:
-        error.message ||
-        "Internal server error"
-    });
-  }
-);
+  res.status(
+    error.status || 500
+  ).json({
+    success: false,
+    message:
+      error.message ||
+      "Internal server error"
+  });
+});
 
 module.exports = app;

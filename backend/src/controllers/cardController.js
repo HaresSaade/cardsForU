@@ -1,7 +1,11 @@
+
 const Card = require("../models/Card");
 const Template = require("../models/Template");
 const TemplateAccess = require("../models/TemplateAccess");
 const User = require("../models/User");
+const RSVP = require("../models/RSVP");
+const InvitationRecipient = require("../models/InvitationRecipient");
+const mongoose = require("mongoose");
 
 /*
 |--------------------------------------------------------------------------
@@ -23,22 +27,40 @@ const normalizeSlug = (value) => {
 const canManageCard = (user, card) => {
   if (!user || !card) return false;
 
-  if (user.role === "admin") {
-    return true;
-  }
+  if (user.role === "admin") return true;
 
-  return (
-    card.owner.toString() ===
-    user._id.toString()
-  );
+  return card.owner.toString() === user._id.toString();
 };
 
 const isCardExpired = (card) => {
-  if (!card.expiresAt) {
-    return false;
+  if (!card.expiresAt) return false;
+  return new Date(card.expiresAt) <= new Date();
+};
+
+const sendControllerError = (res, message, error) => {
+  console.error(message, error);
+
+  if (
+    error.name === "CastError" ||
+    error.name === "ValidationError"
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: error.message
+    });
   }
 
-  return new Date(card.expiresAt) <= new Date();
+  if (error.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: "A card with this URL or relationship already exists"
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    message
+  });
 };
 
 /*
@@ -54,12 +76,16 @@ const isCardExpired = (card) => {
 |       ↓
 | Card automatically attached to that exact access
 |
-| This is important because a customer can now own the same template
-| multiple times for different events.
+| An access is atomically reserved with the new card ID before creation.
+| This prevents two requests from claiming the same unused access.
 |
 */
 
 const createCard = async (req, res) => {
+  let reservedAccessId = null;
+  let reservedCardId = null;
+  let createdCard = false;
+
   try {
     const {
       templateAccessId,
@@ -73,7 +99,7 @@ const createCard = async (req, res) => {
       expiresAt
     } = req.body;
 
-    if (!title) {
+    if (typeof title !== "string" || !title.trim()) {
       return res.status(400).json({
         success: false,
         message: "Card title is required"
@@ -101,8 +127,7 @@ const createCard = async (req, res) => {
       if (!owner.isActive) {
         return res.status(400).json({
           success: false,
-          message:
-            "Cannot create a card for a disabled user"
+          message: "Cannot create a card for a disabled user"
         });
       }
 
@@ -119,32 +144,21 @@ const createCard = async (req, res) => {
     let finalTemplateId = templateId;
 
     if (templateAccessId) {
-      templateAccess =
-        await TemplateAccess.findById(
-          templateAccessId
-        );
+      templateAccess = await TemplateAccess.findById(templateAccessId);
 
       if (!templateAccess) {
         return res.status(404).json({
           success: false,
-          message:
-            "Template access not found"
+          message: "Template access not found"
         });
       }
 
       if (templateAccess.status !== "active") {
         return res.status(400).json({
           success: false,
-          message:
-            "This template access is disabled"
+          message: "This template access is disabled"
         });
       }
-
-      /*
-      |--------------------------------------------------------------------------
-      | Access Must Belong To Card Owner
-      |--------------------------------------------------------------------------
-      */
 
       if (
         templateAccess.user.toString() !==
@@ -152,46 +166,30 @@ const createCard = async (req, res) => {
       ) {
         return res.status(403).json({
           success: false,
-          message:
-            "Template access does not belong to the card owner"
+          message: "Template access does not belong to the card owner"
         });
       }
-
-      /*
-      |--------------------------------------------------------------------------
-      | One Card Per Access
-      |--------------------------------------------------------------------------
-      */
 
       if (templateAccess.card) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
-          message:
-            "This template access already has a card"
+          message: "This template access already has a card"
         });
       }
 
-      finalTemplateId =
-        templateAccess.template;
+      finalTemplateId = templateAccess.template;
     }
 
     /*
     |--------------------------------------------------------------------------
     | Customer Must Use TemplateAccess
     |--------------------------------------------------------------------------
-    |
-    | Customers cannot create cards directly from arbitrary templates.
-    |
     */
 
-    if (
-      req.user.role !== "admin" &&
-      !templateAccess
-    ) {
+    if (req.user.role !== "admin" && !templateAccess) {
       return res.status(400).json({
         success: false,
-        message:
-          "Template access is required to create a card"
+        message: "Template access is required to create a card"
       });
     }
 
@@ -199,16 +197,12 @@ const createCard = async (req, res) => {
     |--------------------------------------------------------------------------
     | Admin Direct Creation
     |--------------------------------------------------------------------------
-    |
-    | Admin may still create a card directly using templateId.
-    |
     */
 
     if (!finalTemplateId) {
       return res.status(400).json({
         success: false,
-        message:
-          "Template or template access is required"
+        message: "Template or template access is required"
       });
     }
 
@@ -218,10 +212,7 @@ const createCard = async (req, res) => {
     |--------------------------------------------------------------------------
     */
 
-    const template =
-      await Template.findById(
-        finalTemplateId
-      );
+    const template = await Template.findById(finalTemplateId);
 
     if (!template) {
       return res.status(404).json({
@@ -244,8 +235,7 @@ const createCard = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "Template does not match the selected template access"
+        message: "Template does not match the selected template access"
       });
     }
 
@@ -267,16 +257,14 @@ const createCard = async (req, res) => {
         });
       }
 
-      const existingSlug =
-        await Card.findOne({
-          slug: finalSlug
-        });
+      const existingSlug = await Card.findOne({
+        slug: finalSlug
+      });
 
       if (existingSlug) {
         return res.status(400).json({
           success: false,
-          message:
-            "This card URL is already in use"
+          message: "This card URL is already in use"
         });
       }
     }
@@ -290,23 +278,63 @@ const createCard = async (req, res) => {
     let finalExpiresAt = null;
 
     if (expiresAt) {
-      const parsedExpiration =
-        new Date(expiresAt);
+      const parsedExpiration = new Date(expiresAt);
 
-      if (
-        Number.isNaN(
-          parsedExpiration.getTime()
-        )
-      ) {
+      if (Number.isNaN(parsedExpiration.getTime())) {
         return res.status(400).json({
           success: false,
-          message:
-            "Invalid expiration date"
+          message: "Invalid expiration date"
         });
       }
 
-      finalExpiresAt =
-        parsedExpiration;
+      finalExpiresAt = parsedExpiration;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reserve Exact TemplateAccess Atomically
+    |--------------------------------------------------------------------------
+    |
+    | Preassign a card ObjectId, then claim the unused access in one
+    | conditional MongoDB operation.
+    |
+    */
+
+    const newCardId = new mongoose.Types.ObjectId();
+
+    if (templateAccess) {
+      const claimedAccess =
+        await TemplateAccess.findOneAndUpdate(
+          {
+            _id: templateAccess._id,
+            user: cardOwnerId,
+            template: template._id,
+            status: "active",
+            $or: [
+              { card: null },
+              { card: { $exists: false } }
+            ]
+          },
+          {
+            $set: {
+              card: newCardId
+            }
+          },
+          {
+            new: true,
+            runValidators: true
+          }
+        );
+
+      if (!claimedAccess) {
+        return res.status(409).json({
+          success: false,
+          message: "This template access is no longer available"
+        });
+      }
+
+      reservedAccessId = claimedAccess._id;
+      reservedCardId = newCardId;
     }
 
     /*
@@ -316,66 +344,83 @@ const createCard = async (req, res) => {
     */
 
     const card = await Card.create({
+      _id: newCardId,
       owner: cardOwnerId,
       template: template._id,
       title: title.trim(),
       slug: finalSlug,
       data: data || {},
-      customization:
-        customization || {},
+      customization: customization || {},
       settings: settings || {},
       expiresAt: finalExpiresAt
     });
 
+    createdCard = true;
+
     /*
-    |--------------------------------------------------------------------------
-    | Attach Card To Exact TemplateAccess
-    |--------------------------------------------------------------------------
+    | Card creation succeeded.
+    | Do not release the access if response population fails.
     */
 
-    if (templateAccess) {
+    reservedAccessId = null;
+    reservedCardId = null;
+
+    const populatedCard = await Card.findById(card._id)
+      .populate(
+        "owner",
+        "firstName lastName email"
+      )
+      .populate("template");
+
+    return res.status(201).json({
+      success: true,
+      message: "Card created successfully",
+      card: populatedCard,
+      templateAccessId: templateAccess
+        ? templateAccess._id
+        : null
+    });
+  } catch (error) {
+    /*
+    |--------------------------------------------------------------------------
+    | Release Failed Reservation
+    |--------------------------------------------------------------------------
+    |
+    | Only release this request's exact reservation.
+    | Do not overwrite another card attachment.
+    |
+    */
+
+    if (
+      !createdCard &&
+      reservedAccessId &&
+      reservedCardId
+    ) {
       try {
-        templateAccess.card = card._id;
-
-        await templateAccess.save();
-      } catch (error) {
-        /*
-        | Avoid leaving an orphan Card if access attachment fails.
-        */
-
-        await Card.findByIdAndDelete(
-          card._id
+        await TemplateAccess.updateOne(
+          {
+            _id: reservedAccessId,
+            card: reservedCardId
+          },
+          {
+            $set: {
+              card: null
+            }
+          }
         );
-
-        throw error;
+      } catch (cleanupError) {
+        console.error(
+          "Failed to release template access reservation:",
+          cleanupError
+        );
       }
     }
 
-    const populatedCard =
-      await Card.findById(card._id)
-        .populate(
-          "owner",
-          "firstName lastName email"
-        )
-        .populate("template");
-
-    res.status(201).json({
-      success: true,
-      message:
-        "Card created successfully",
-      card: populatedCard,
-      templateAccessId:
-        templateAccess
-          ? templateAccess._id
-          : null
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to create card",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to create card",
+      error
+    );
   }
 };
 
@@ -395,18 +440,17 @@ const getMyCards = async (req, res) => {
         createdAt: -1
       });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: cards.length,
       cards
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to fetch cards",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to fetch cards",
+      error
+    );
   }
 };
 
@@ -448,18 +492,17 @@ const getAllCards = async (req, res) => {
         createdAt: -1
       });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: cards.length,
       cards
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to fetch cards",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to fetch cards",
+      error
+    );
   }
 };
 
@@ -490,19 +533,18 @@ const getUserCards = async (req, res) => {
         createdAt: -1
       });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       user,
       count: cards.length,
       cards
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to fetch user cards",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to fetch user cards",
+      error
+    );
   }
 };
 
@@ -533,8 +575,7 @@ const getCardById = async (req, res) => {
     if (!canManageCard(req.user, card)) {
       return res.status(403).json({
         success: false,
-        message:
-          "You do not have permission to access this card"
+        message: "You do not have permission to access this card"
       });
     }
 
@@ -545,18 +586,17 @@ const getCardById = async (req, res) => {
         "_id status eventLabel pricePaid currency"
       );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       card,
       templateAccess
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to fetch card",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to fetch card",
+      error
+    );
   }
 };
 
@@ -591,20 +631,17 @@ const updateCard = async (req, res) => {
     if (!canManageCard(req.user, card)) {
       return res.status(403).json({
         success: false,
-        message:
-          "You do not have permission to update this card"
+        message: "You do not have permission to update this card"
       });
     }
 
     if (title !== undefined) {
-      const normalizedTitle =
-        title.toString().trim();
+      const normalizedTitle = title.toString().trim();
 
       if (!normalizedTitle) {
         return res.status(400).json({
           success: false,
-          message:
-            "Card title cannot be empty"
+          message: "Card title cannot be empty"
         });
       }
 
@@ -621,8 +658,7 @@ const updateCard = async (req, res) => {
       if (!slug) {
         card.slug = null;
       } else {
-        const normalizedSlug =
-          normalizeSlug(slug);
+        const normalizedSlug = normalizeSlug(slug);
 
         if (!normalizedSlug) {
           return res.status(400).json({
@@ -631,24 +667,21 @@ const updateCard = async (req, res) => {
           });
         }
 
-        const existingSlug =
-          await Card.findOne({
-            slug: normalizedSlug,
-            _id: {
-              $ne: card._id
-            }
-          });
+        const existingSlug = await Card.findOne({
+          slug: normalizedSlug,
+          _id: {
+            $ne: card._id
+          }
+        });
 
         if (existingSlug) {
           return res.status(400).json({
             success: false,
-            message:
-              "This card URL is already in use"
+            message: "This card URL is already in use"
           });
         }
 
-        card.slug =
-          normalizedSlug;
+        card.slug = normalizedSlug;
       }
     }
 
@@ -657,8 +690,7 @@ const updateCard = async (req, res) => {
     }
 
     if (customization !== undefined) {
-      card.customization =
-        customization;
+      card.customization = customization;
     }
 
     /*
@@ -670,8 +702,7 @@ const updateCard = async (req, res) => {
     if (settings !== undefined) {
       const currentSettings =
         card.settings &&
-        typeof card.settings.toObject ===
-          "function"
+        typeof card.settings.toObject === "function"
           ? card.settings.toObject()
           : card.settings || {};
 
@@ -691,23 +722,16 @@ const updateCard = async (req, res) => {
       if (!expiresAt) {
         card.expiresAt = null;
       } else {
-        const parsedExpiration =
-          new Date(expiresAt);
+        const parsedExpiration = new Date(expiresAt);
 
-        if (
-          Number.isNaN(
-            parsedExpiration.getTime()
-          )
-        ) {
+        if (Number.isNaN(parsedExpiration.getTime())) {
           return res.status(400).json({
             success: false,
-            message:
-              "Invalid expiration date"
+            message: "Invalid expiration date"
           });
         }
 
-        card.expiresAt =
-          parsedExpiration;
+        card.expiresAt = parsedExpiration;
       }
     }
 
@@ -721,19 +745,17 @@ const updateCard = async (req, res) => {
         )
         .populate("template");
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message:
-        "Card updated successfully",
+      message: "Card updated successfully",
       card: populatedCard
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to update card",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to update card",
+      error
+    );
   }
 };
 
@@ -759,16 +781,14 @@ const publishCard = async (req, res) => {
     if (!canManageCard(req.user, card)) {
       return res.status(403).json({
         success: false,
-        message:
-          "You do not have permission to publish this card"
+        message: "You do not have permission to publish this card"
       });
     }
 
     if (isCardExpired(card)) {
       return res.status(400).json({
         success: false,
-        message:
-          "An expired card cannot be published"
+        message: "An expired card cannot be published"
       });
     }
 
@@ -780,13 +800,10 @@ const publishCard = async (req, res) => {
 
     if (!card.slug) {
       const baseSlug =
-        normalizeSlug(card.title) ||
-        "card";
+        normalizeSlug(card.title) || "card";
 
       let candidate =
-        `${baseSlug}-${card._id
-          .toString()
-          .slice(-6)}`;
+        `${baseSlug}-${card._id.toString().slice(-6)}`;
 
       let counter = 1;
 
@@ -799,9 +816,7 @@ const publishCard = async (req, res) => {
         })
       ) {
         candidate =
-          `${baseSlug}-${card._id
-            .toString()
-            .slice(-6)}-${counter}`;
+          `${baseSlug}-${card._id.toString().slice(-6)}-${counter}`;
 
         counter++;
       }
@@ -814,24 +829,21 @@ const publishCard = async (req, res) => {
 
     await card.save();
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message:
-        "Card published successfully",
+      message: "Card published successfully",
       card,
       sharePath:
-        card.settings?.shareEnabled !==
-        false
+        card.settings?.shareEnabled !== false
           ? `/card/${card.slug}`
           : null
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to publish card",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to publish card",
+      error
+    );
   }
 };
 
@@ -841,10 +853,7 @@ const publishCard = async (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-const unpublishCard = async (
-  req,
-  res
-) => {
+const unpublishCard = async (req, res) => {
   try {
     const card = await Card.findById(
       req.params.id
@@ -860,8 +869,7 @@ const unpublishCard = async (
     if (!canManageCard(req.user, card)) {
       return res.status(403).json({
         success: false,
-        message:
-          "You do not have permission to unpublish this card"
+        message: "You do not have permission to unpublish this card"
       });
     }
 
@@ -870,19 +878,17 @@ const unpublishCard = async (
 
     await card.save();
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message:
-        "Card unpublished successfully",
+      message: "Card unpublished successfully",
       card
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to unpublish card",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to unpublish card",
+      error
+    );
   }
 };
 
@@ -890,6 +896,13 @@ const unpublishCard = async (
 |--------------------------------------------------------------------------
 | Delete Card
 |--------------------------------------------------------------------------
+|
+| Remove RSVP responses and invitation recipients before deleting card.
+| Detach any access grants so the customer may reuse their design access.
+|
+| NOTE: This is not a multi-document transaction.
+| A failure between operations can leave partial cleanup.
+|
 */
 
 const deleteCard = async (req, res) => {
@@ -908,10 +921,23 @@ const deleteCard = async (req, res) => {
     if (!canManageCard(req.user, card)) {
       return res.status(403).json({
         success: false,
-        message:
-          "You do not have permission to delete this card"
+        message: "You do not have permission to delete this card"
       });
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Clean Up Related Data
+    |--------------------------------------------------------------------------
+    */
+
+    await InvitationRecipient.deleteMany({
+      card: card._id
+    });
+
+    await RSVP.deleteMany({
+      card: card._id
+    });
 
     /*
     |--------------------------------------------------------------------------
@@ -932,18 +958,16 @@ const deleteCard = async (req, res) => {
 
     await card.deleteOne();
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message:
-        "Card deleted successfully"
+      message: "Card deleted successfully"
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to delete card",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to delete card",
+      error
+    );
   }
 };
 
@@ -956,10 +980,7 @@ const deleteCard = async (req, res) => {
 |
 */
 
-const getPublicCardBySlug = async (
-  req,
-  res
-) => {
+const getPublicCardBySlug = async (req, res) => {
   try {
     const normalizedSlug =
       normalizeSlug(req.params.slug);
@@ -982,35 +1003,31 @@ const getPublicCardBySlug = async (
     }
 
     if (
-      card.settings?.shareEnabled ===
-      false
+      card.settings?.shareEnabled === false
     ) {
       return res.status(404).json({
         success: false,
-        message:
-          "Card sharing is disabled"
+        message: "Card sharing is disabled"
       });
     }
 
     if (isCardExpired(card)) {
       return res.status(410).json({
         success: false,
-        message:
-          "This card has expired"
+        message: "This card has expired"
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       card
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to load card",
-      error: error.message
-    });
+    return sendControllerError(
+      res,
+      "Failed to load card",
+      error
+    );
   }
 };
 

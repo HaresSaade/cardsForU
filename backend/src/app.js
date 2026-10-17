@@ -11,6 +11,7 @@ const rsvpRoutes = require("./routes/rsvpRoutes");
 const assetRoutes = require("./routes/assetRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
 const invitationRecipientRoutes = require("./routes/invitationRecipientRoutes");
+const adminDashboardRoutes = require("./routes/adminDashboardRoutes");
 
 const app = express();
 
@@ -54,66 +55,48 @@ app.get("/api/health", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.use(
-  "/api/auth",
-  authRoutes
-);
+app.use("/api/auth", authRoutes);
 
-app.use(
-  "/api/users",
-  userRoutes
-);
+app.use("/api/users", userRoutes);
 
-app.use(
-  "/api/templates",
-  templateRoutes
-);
+app.use("/api/templates", templateRoutes);
 
-app.use(
-  "/api/cards",
-  cardRoutes
-);
+app.use("/api/cards", cardRoutes);
 
-app.use(
-  "/api/template-access",
-  templateAccessRoutes
-);
+app.use("/api/template-access", templateAccessRoutes);
 
-app.use(
-  "/api/rsvps",
-  rsvpRoutes
-);
+app.use("/api/rsvps", rsvpRoutes);
 
-app.use(
-  "/api/assets",
-  assetRoutes
-);
-
-app.use(
-  "/api/dashboard",
-  dashboardRoutes
-);
+app.use("/api/assets", assetRoutes);
 
 /*
 |--------------------------------------------------------------------------
-| Invitation Recipient Routes
+| Customer Dashboard
 |--------------------------------------------------------------------------
-|
-| Guest list management:
-| - Create recipients
-| - Bulk add recipients
-| - View guest lists
-| - Update recipient information
-| - Link RSVP responses
-| - Track invitation delivery
-| - View guest statistics
-| - Delete recipients
-|
+*/
+
+app.use("/api/dashboard", dashboardRoutes);
+
+/*
+|--------------------------------------------------------------------------
+| Invitation Recipient Management
+|--------------------------------------------------------------------------
 */
 
 app.use(
   "/api/invitation-recipients",
   invitationRecipientRoutes
+);
+
+/*
+|--------------------------------------------------------------------------
+| Admin Dashboard
+|--------------------------------------------------------------------------
+*/
+
+app.use(
+  "/api/admin/dashboard",
+  adminDashboardRoutes
 );
 
 /*
@@ -138,13 +121,14 @@ app.use((req, res) => {
 app.use((error, req, res, next) => {
   console.error(error);
 
-  res.status(
-    error.status || 500
-  ).json({
+  const status = Number(error.status || error.statusCode) || 500;
+
+  res.status(status).json({
     success: false,
     message:
-      error.message ||
-      "Internal server error"
+      process.env.NODE_ENV === "production" && status >= 500
+        ? "Internal server error"
+        : error.message || "Internal server error"
   });
 });
 

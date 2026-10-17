@@ -1,3 +1,4 @@
+
 const mongoose = require("mongoose");
 
 const templateAccessSchema = new mongoose.Schema(
@@ -73,7 +74,7 @@ const templateAccessSchema = new mongoose.Schema(
     | Granted By
     |--------------------------------------------------------------------------
     |
-    | Normally the CardsForU admin who sold/granted the design.
+    | Normally the cardsforuleb admin who sold/granted the design.
     |
     */
 
@@ -88,7 +89,7 @@ const templateAccessSchema = new mongoose.Schema(
     | Sale Information
     |--------------------------------------------------------------------------
     |
-    | CardsForU currently handles sales manually.
+    | cardsforuleb currently handles sales manually.
     | This is informational and is NOT a payment gateway transaction.
     |
     */
@@ -182,17 +183,31 @@ templateAccessSchema.index({
 });
 
 /*
+|--------------------------------------------------------------------------
+| Unique Card Attachment
+|--------------------------------------------------------------------------
+|
 | A card should belong to at most one TemplateAccess.
 |
-| sparse allows multiple records where card is null.
+| Only actual ObjectId values are indexed.
+|
+| This allows multiple access records with card: null,
+| while preventing the same card from being attached
+| to multiple access records.
+|
 */
+
 templateAccessSchema.index(
   {
     card: 1
   },
   {
     unique: true,
-    sparse: true
+    partialFilterExpression: {
+      card: {
+        $type: "objectId"
+      }
+    }
   }
 );
 
